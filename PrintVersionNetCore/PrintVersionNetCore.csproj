@@ -8,4 +8,8 @@
         <RuntimeFrameworkVersion Condition="'$(TargetFramework)' == 'netcoreapp1.1'">1.1.0</RuntimeFrameworkVersion>
     </PropertyGroup>
 
+    <ItemGroup>
+      <ProjectReference Include="..\Austin.DotNetVersionDetection\Austin.DotNetVersionDetection.csproj" />
+    </ItemGroup>
+
 </Project>

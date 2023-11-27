@@ -1,7 +1,9 @@
 ﻿using Microsoft.Deployment.DotNet.Releases;
+using System.CommandLine;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
+using System.Runtime.Serialization;
 using System.Security.Cryptography;
 
 namespace ScrapeNetCoreVersion;
@@ -11,70 +13,83 @@ internal class Program
     // Versions of .NET Core 3 and expose the product version directly in Environment.Version
     const int MAXIMUM_VERSION = 3;
 
-    // TODO: don't hard code
-    const string DOWNLOAD_LOCATION = @"E:\dotnetversions\netcoredownload";
-    const string EXTRACT_LOCATION = @"E:\dotnetversions\netcoreruntime";
-    const string VERSION_PRINTER = @"D:\src\VersionDetection\Austin.DotNetVersionDetection\PrintVersionNetCore\bin\Debug\";
-    const string OUTPUT_FILE = @"D:\src\VersionDetection\Austin.DotNetVersionDetection\Austin.DotNetVersionDetection\DotNetCoreVersion.List.cs";
+    readonly bool _offline;
+    readonly string _rid;
+    readonly string _downloadLocation;
+    readonly string _extractLocation;
+    readonly string _versionPrinterPath;
 
     static async Task Main(string[] args)
     {
-        await Console.Out.WriteLineAsync($"RID: {RuntimeInformation.RuntimeIdentifier}");
+        var dotnetStoragePathOption = new Option<string>(
+            name: "--dotnets-path",
+            description: "Where to store dotnet downloads and extracted runtimes. Also settable with the AUSTIN_DOTNETS_PATH environmental variable",
+            getDefaultValue: () => Environment.GetEnvironmentVariable("AUSTIN_DOTNETS_PATH") ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), "dotnets"));
 
-        bool isWindows = RuntimeInformation.RuntimeIdentifier.StartsWith("win-");
+        var ridOption = new Option<string>(
+            name: "--rid",
+            description: "The runtime identifier of dotnet to use.",
+            getDefaultValue: () => RuntimeInformation.RuntimeIdentifier
+        );
 
-        string expectedArchiveExtension = isWindows ? ".zip" : ".tar.gz";
+        var offlineOption = new Option<bool>(
+            name: "--offline",
+            description: "Don't download any information from the internet, just use previously downloaded dotnets."
+        );
 
-        ProductCollection products = await ProductCollection.GetAsync();
-
-        var runtimes = new Dictionary<ReleaseVersion, ReleaseFile>();
-
-        foreach (var product in products)
+        var rootCommand = new RootCommand("For getting version information and testing.")
         {
-            if (int.Parse(product.ProductVersion.Split('.')[0]) >= MAXIMUM_VERSION)
-                continue;
+            dotnetStoragePathOption,
+            ridOption,
+            offlineOption,
+        };
 
-            IEnumerable<ProductRelease> releases = await product.GetReleasesAsync();
+        var scrapeCommand = new Command("scrape", "Scrape version information from .NET Core versions.")
+        {
+        };
+        rootCommand.Add(scrapeCommand);
 
-            foreach (var r in releases)
-            {
-                if (r.Runtime is null || r.Runtime.Version.Prerelease is not null)
-                {
-                    continue;
-                }
+        scrapeCommand.SetHandler(async (rid, dotnetStoragePath, offline) =>
+        {
+            var prog = new Program(offline, rid, dotnetStoragePath);
+            await prog.DownloadAndExtractIfNotOffline();
+            var versionMap = prog.GetVersionsFromRuntimes();
+            WriteDotnetCoreInfo(versionMap);
+        }, ridOption, dotnetStoragePathOption, offlineOption);
 
-                // NOTE: this will probably not work with anything except x64, as support has varied over time
-                ReleaseFile? file = r.Runtime.Files.Where(f => f.Rid == RuntimeInformation.RuntimeIdentifier && f.Name.EndsWith(expectedArchiveExtension)).SingleOrDefault();
+        await rootCommand.InvokeAsync(args);
+    }
 
-                if (file is null)
-                {
-                    if (r.Version.ToString() != "1.0.2" || RuntimeInformation.RuntimeIdentifier == "osx-x64")
-                        throw new Exception("Unexpected missing version.");
-                    continue;
-                }
-
-                if (runtimes.TryGetValue(r.Runtime.Version, out ReleaseFile? existingFile))
-                {
-                    if (file.Hash != existingFile.Hash)
-                    {
-                        throw new Exception("Hash mismatch for the same runtime version");
-                    }
-                }
-                else
-                {
-                    runtimes.Add(r.Runtime.Version, file);
-                }
-            }
+    private async Task DownloadAndExtractIfNotOffline()
+    {
+        if (!_offline)
+        {
+            ProductCollection products = await ProductCollection.GetAsync();
+            var runtimes = await GetProductInfo(products);
+            await DownloadRuntimes(runtimes);
+            await ExtractRuntimes(runtimes);
         }
+    }
 
-        //await DownloadRuntimes(runtimes);
+    bool IsWindows => _rid.StartsWith("win-");
+    string ExpectedArchiveExtension => IsWindows ? ".zip" : ".tar.gz";
 
-        //ExtractRuntimes(runtimes, isWindows);
+    private Program(bool offline, string rid, string dotnetsRoot)
+    {
+        this._offline = offline;
+        this._rid = rid;
+        this._downloadLocation = Path.Combine(dotnetsRoot, rid, "downloads");
+        this._extractLocation = Path.Combine(dotnetsRoot, rid, "extracted");
+        this._versionPrinterPath = Path.Combine(Environment.CurrentDirectory, "..", "PrintVersionNetCore", "bin", "debug");
+        Directory.CreateDirectory(_downloadLocation);
+        Directory.CreateDirectory(_extractLocation);
+    }
 
-        var versionMap = GetVersionsFromRuntimes(runtimes, isWindows);
-
-        using var fs = File.Create(OUTPUT_FILE);
+    private static void WriteDotnetCoreInfo(List<VersionCombo> versionMap)
+    {
+        using var fs = File.Create(Path.Combine(Environment.CurrentDirectory, "..", "Austin.DotNetVersionDetection", "Detection", "DotNetCoreVersion.List.cs"));
         using var sw = new StreamWriter(fs);
+
         sw.WriteLine("using System;");
         sw.WriteLine("using System.Collections.Generic;");
         sw.WriteLine();
@@ -112,15 +127,72 @@ internal class Program
         sw.WriteLine("}");
     }
 
-    private static async Task DownloadRuntimes(Dictionary<ReleaseVersion, ReleaseFile> runtimes)
+    private async Task<Dictionary<ReleaseVersion, ReleaseFile>> GetProductInfo(ProductCollection products)
     {
-        var wc = new HttpClient();
+        var runtimes = new Dictionary<ReleaseVersion, ReleaseFile>();
 
-        foreach (var kvp in runtimes)
+        foreach (var product in products)
         {
-            string destPath = Path.Combine(DOWNLOAD_LOCATION, kvp.Value.FileName);
+            if (int.Parse(product.ProductVersion.Split('.')[0]) >= MAXIMUM_VERSION)
+                continue;
+
+            IEnumerable<ProductRelease> releases = await product.GetReleasesAsync();
+
+            foreach (var r in releases)
+            {
+                if (r.Runtime is null || r.Runtime.Version.Prerelease is not null)
+                {
+                    continue;
+                }
+
+                if (r.Version.ToString() == "2.0.8")
+                {
+                    // 2.0.8 only rebuilt ASP.NET, not the runtime itself.
+                    continue;
+                }
+
+                // NOTE: this will probably not work with anything except x64, as support has varied over time
+                ReleaseFile? file = r.Runtime.Files.Where(f => f.Rid == _rid && f.FileName.EndsWith(ExpectedArchiveExtension)).SingleOrDefault();
+
+                if (file is null)
+                {
+                    // oddly, 1.0.2 only has an OSX .pkg file and nothing else.
+                    if (r.Version.ToString() != "1.0.2")
+                    {
+                        string foundFiles = string.Join(", ", r.Runtime.Files.Select(f => f.FileName));
+                        throw new Exception($"Could not find any files for version {r.Version}. Found these files: {foundFiles}");
+                    }
+                    continue;
+                }
+
+                if (runtimes.TryGetValue(r.Runtime.Version, out ReleaseFile? existingFile))
+                {
+                    if (file.Hash != existingFile.Hash)
+                    {
+                        throw new Exception("Hash mismatch for the same runtime version");
+                    }
+                }
+                else
+                {
+                    runtimes.Add(r.Runtime.Version, file);
+                }
+            }
+        }
+
+        return runtimes;
+    }
+
+    private async Task DownloadRuntimes(Dictionary<ReleaseVersion, ReleaseFile> runtimes)
+    {
+        using var wc = new HttpClient();
+
+        await Parallel.ForEachAsync(runtimes, async (kvp, ct) =>
+        {
+            string destPath = Path.Combine(_downloadLocation, kvp.Value.FileName);
             if (!File.Exists(destPath) || !await VerifyHashOrDelete(kvp.Value, destPath))
             {
+                Console.WriteLine("Downloading " + kvp.Key.ToString());
+
                 using (Stream responseStream = await wc.GetStreamAsync(kvp.Value.Address))
                 using (Stream fs = File.Create(destPath))
                 {
@@ -128,8 +200,10 @@ internal class Program
                 }
 
                 await VerifyHashOrDelete(kvp.Value, destPath, throwOnError: true);
+
+                Console.WriteLine("Downloaded " + kvp.Key.ToString());
             }
-        }
+        });
     }
 
     private static async Task<bool> VerifyHashOrDelete(ReleaseFile file, string destPath, bool throwOnError = false)
@@ -177,45 +251,54 @@ internal class Program
         return hashOk;
     }
 
-    private static void ExtractRuntimes(Dictionary<ReleaseVersion, ReleaseFile> runtimes, bool isWindows)
+    private async Task ExtractRuntimes(Dictionary<ReleaseVersion, ReleaseFile> runtimes)
     {
-        if (!isWindows)
+        await Parallel.ForEachAsync(runtimes, async (kvp, ct) =>
         {
-            // TODO: tar.gz
-            throw new NotImplementedException();
-        }
-
-        foreach (var kvp in runtimes)
-        {
-            string destPath = Path.Combine(EXTRACT_LOCATION, kvp.Key.ToString());
+            string destPath = Path.Combine(_extractLocation, kvp.Key.ToString());
             var di = Directory.CreateDirectory(destPath);
             if (di.GetFiles().Any())
             {
                 // blindly assume we already extracted the runtime
                 return;
             }
-            string zipPath = Path.Combine(DOWNLOAD_LOCATION, kvp.Value.FileName);
-            ZipFile.ExtractToDirectory(zipPath, destPath);
-        }
+
+            Console.WriteLine($"Extracting {kvp.Key}");
+
+            string archivePath = Path.Combine(_downloadLocation, kvp.Value.FileName);
+            try
+            {
+                if (IsWindows)
+                {
+                    ZipFile.ExtractToDirectory(archivePath, destPath);
+                }
+                else
+                {
+                    await using var fs = File.OpenRead(archivePath);
+                    await using var gz = new GZipStream(fs, CompressionMode.Decompress);
+                    await System.Formats.Tar.TarFile.ExtractToDirectoryAsync(gz, destPath, false, ct);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception("Failed to extract " + archivePath, ex);
+            }
+
+            Console.WriteLine($"Extracted {kvp.Key}");
+        });
     }
 
-    private static List<VersionCombo> GetVersionsFromRuntimes(Dictionary<ReleaseVersion, ReleaseFile> runtimes, bool isWindows)
+    private List<VersionCombo> GetVersionsFromRuntimes()
     {
         var ret = new List<VersionCombo>();
 
-        string executableExtension = isWindows ? ".exe" : "";
+        string executableExtension = IsWindows ? ".exe" : "";
 
-        //foreach (var runtimeVersion in runtimes.Keys)
-        Parallel.ForEach(runtimes.Keys, runtimeVersion =>
+        Parallel.ForEach(new DirectoryInfo(_extractLocation).GetDirectories(), async (dotnetFolder, ct) =>
         {
-            if (runtimeVersion.ToString() == "2.0.8")
-            {
-                // this version hash the exact same commit hash as 2.0.7, at least for win-x64
-                return;
-            }
-
-            string dotnetExe = Path.Combine(EXTRACT_LOCATION, runtimeVersion.ToString(), "dotnet" + executableExtension);
-            string versionPrinter = Path.Combine(VERSION_PRINTER, $"netcoreapp{runtimeVersion.Major}.{runtimeVersion.Minor}", "PrintVersionNetCore.dll");
+            var runtimeVersion = Version.Parse(dotnetFolder.Name);
+            string dotnetExe = Path.Combine(dotnetFolder.FullName, "dotnet" + executableExtension);
+            string versionPrinter = Path.Combine(_versionPrinterPath, $"netcoreapp{runtimeVersion.Major}.{runtimeVersion.Minor}", "PrintVersionNetCore.dll");
 
             var psi = new ProcessStartInfo(dotnetExe, versionPrinter);
             psi.Environment.Add("DOTNET_MULTILEVEL_LOOKUP", "0");
@@ -227,8 +310,9 @@ internal class Program
             {
                 throw new Exception("failed to start");
             }
-            string[] result = p.StandardOutput.ReadToEnd().Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
-            p.WaitForExit();
+            string allOutput = await p.StandardOutput.ReadToEndAsync();
+            string[] result = allOutput.Split(new char[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
+            await p.WaitForExitAsync();
 
             if (p.ExitCode != 0)
             {
@@ -240,7 +324,7 @@ internal class Program
             string frameworkDescription = result[2];
 
             lock (ret)
-                ret.Add(new VersionCombo(spcVersion, spcInformationalVersion, frameworkDescription, new Version(runtimeVersion.Major, runtimeVersion.Minor, runtimeVersion.Patch)));
+                ret.Add(new VersionCombo(spcVersion, spcInformationalVersion, frameworkDescription, runtimeVersion));
         });
         return ret;
     }

@@ -38,11 +38,17 @@ internal class Program
             description: "Don't download any information from the internet, just use previously downloaded dotnets."
         );
 
+        var dockerOption = new Option<string>(
+            name: "--docker-image",
+            description: "If provided, a docker image within to run the donet programs."
+        );
+
         var rootCommand = new RootCommand("For getting version information and testing.")
         {
             dotnetStoragePathOption,
             ridOption,
             offlineOption,
+            dockerOption,
         };
 
         var scrapeCommand = new Command("scrape", "Scrape version information from .NET Core versions.")
@@ -55,12 +61,12 @@ internal class Program
         };
         rootCommand.Add(writeCommand);
 
-        scrapeCommand.SetHandler(async (rid, dotnetStoragePath, offline) =>
+        scrapeCommand.SetHandler(async (rid, dotnetStoragePath, offline, dockerImage) =>
         {
             var prog = new Program(offline, rid, dotnetStoragePath);
             await prog.DownloadAndExtractIfNotOffline();
-            await prog.SaveVersionInfoFromRuntimes();
-        }, ridOption, dotnetStoragePathOption, offlineOption);
+            await prog.SaveVersionInfoFromRuntimes(dockerImage);
+        }, ridOption, dotnetStoragePathOption, offlineOption, dockerOption);
 
         writeCommand.SetHandler(async (rid, dotnetStoragePath, offline) =>
         {
@@ -303,24 +309,43 @@ internal class Program
         });
     }
 
-    private async Task SaveVersionInfoFromRuntimes()
+    private async Task SaveVersionInfoFromRuntimes(string dockerImage)
     {
         var ret = new List<VersionCombo>();
 
         string executableExtension = IsWindows ? ".exe" : "";
 
-        await Parallel.ForEachAsync(new DirectoryInfo(_extractLocation).GetDirectories(), async (dotnetFolder, ct) =>
+        var parOptions = new ParallelOptions()
+        {
+            // MaxDegreeOfParallelism = 1,
+        };
+
+        await Parallel.ForEachAsync(new DirectoryInfo(_extractLocation).GetDirectories(), parOptions, async (dotnetFolder, ct) =>
         {
             var runtimeVersion = Version.Parse(dotnetFolder.Name);
-            string dotnetExe = Path.Combine(dotnetFolder.FullName, "dotnet" + executableExtension);
-            string versionPrinter = Path.Combine(_versionPrinterPath, $"netcoreapp{runtimeVersion.Major}.{runtimeVersion.Minor}", "PrintVersionNetCore.dll");
+            string versionPrinterFolder = Path.Combine(_versionPrinterPath, $"netcoreapp{runtimeVersion.Major}.{runtimeVersion.Minor}");
+            const string VERSION_PRINTER_DLL = "PrintVersionNetCore.dll";
 
-            var psi = new ProcessStartInfo(dotnetExe, versionPrinter);
+            string exe;
+            string args;
+            if (string.IsNullOrEmpty(dockerImage))
+            {
+                exe = Path.Combine(dotnetFolder.FullName, "dotnet" + executableExtension);
+                args = Path.Combine(versionPrinterFolder, VERSION_PRINTER_DLL);;
+            }
+            else
+            {
+                // TODO: move these apt-get commands into a Dockerfile too speed things up
+                exe = "docker";
+                args = $"run --rm -it -e DOTNET_MULTILEVEL_LOOKUP=0 -v {dotnetFolder}:/dotnet -v {versionPrinterFolder}:/app {dockerImage} bash -c \"apt-get update > /dev/null && apt-get install -y libunwind8 libicu-dev > /dev/null && /dotnet/dotnet /app/{VERSION_PRINTER_DLL}\"";
+            }
+
+            var psi = new ProcessStartInfo(exe, args);
             psi.Environment.Add("DOTNET_MULTILEVEL_LOOKUP", "0");
             psi.UseShellExecute = false;
             psi.RedirectStandardOutput = true;
 
-            Console.WriteLine($"Running {dotnetExe} {versionPrinter}");
+            Console.WriteLine($"Running {exe} {args}");
 
             var p = Process.Start(psi);
             if (p is null)

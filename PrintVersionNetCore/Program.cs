@@ -1,5 +1,4 @@
-﻿using Austin.DotNetVersionDetection;
-using System;
+﻿using System;
 using System.Reflection;
 using System.Runtime.InteropServices;
 
@@ -16,9 +15,6 @@ namespace PrintVersionNetCore
 #else
             Console.WriteLine(RuntimeInformation.FrameworkDescription);
 #endif
-            // Console.WriteLine(DotNetVersion.Detect());
-            // PropertyInfo prop = typeof(Environment).GetTypeInfo().GetDeclaredProperty("Version");
-            // Console.WriteLine(prop?.GetValue(null) ?? "null");
         }
     }
 }

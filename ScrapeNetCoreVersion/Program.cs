@@ -91,7 +91,7 @@ internal class Program
         this._rid = rid;
         this._downloadLocation = Path.Combine(dotnetsRoot, rid, "downloads");
         this._extractLocation = Path.Combine(dotnetsRoot, rid, "extracted");
-        this._versionPrinterPath = Path.Combine(Environment.CurrentDirectory, "..", "PrintVersionNetCore", "bin", "debug");
+        this._versionPrinterPath = Path.GetFullPath(Path.Combine(Environment.CurrentDirectory, "..", "PrintVersionNetCore", "bin", "Debug"));
         Directory.CreateDirectory(_downloadLocation);
         Directory.CreateDirectory(_extractLocation);
     }
@@ -162,15 +162,19 @@ internal class Program
                     continue;
                 }
 
-                // NOTE: this will probably not work with anything except x64, as support has varied over time
                 ReleaseFile? file = r.Runtime.Files.Where(f => f.Rid == _rid && f.FileName.EndsWith(ExpectedArchiveExtension)).SingleOrDefault();
+
+                if (file is null && _rid == "linux-x64")
+                {
+                    file = r.Runtime.Files.Where(f => f.Rid == "ubuntu-x64" && f.FileName.EndsWith(ExpectedArchiveExtension)).SingleOrDefault();
+                }
 
                 if (file is null)
                 {
                     // oddly, 1.0.2 only has an OSX .pkg file and nothing else.
                     if (r.Version.ToString() != "1.0.2")
                     {
-                        string foundFiles = string.Join(", ", r.Runtime.Files.Select(f => f.FileName));
+                        string foundFiles = string.Join(", ", r.Runtime.Files.Select(f => $"({f.Rid}: {f.FileName})"));
                         throw new Exception($"Could not find any files for version {r.Version}. Found these files: {foundFiles}");
                     }
                     continue;
@@ -315,6 +319,8 @@ internal class Program
             psi.Environment.Add("DOTNET_MULTILEVEL_LOOKUP", "0");
             psi.UseShellExecute = false;
             psi.RedirectStandardOutput = true;
+
+            Console.WriteLine($"Running {dotnetExe} {versionPrinter}");
 
             var p = Process.Start(psi);
             if (p is null)

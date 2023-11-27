@@ -204,12 +204,6 @@
     "RuntimeVersion": "2.0.7"
   },
   {
-    "SpcVersion": "4.6.26328.1",
-    "SpcInformationalVersion": "4.6.26328.01 @BuiltBy: dlab-DDVSOWINAGE044 @Commit: b8c69ed222a1e6e5392783cbb4df5faa87be349e",
-    "FrameworkDescription": ".NET Core 4.6.26328.01",
-    "RuntimeVersion": "2.0.8"
-  },
-  {
     "SpcVersion": "4.6.26614.1",
     "SpcInformationalVersion": "4.6.26614.01 @BuiltBy: dlab14-DDVSOWINAGE018 @Commit: a536e7eec55c538c94639cefe295aa672996bf9b",
     "FrameworkDescription": ".NET Core 4.6.26614.01",

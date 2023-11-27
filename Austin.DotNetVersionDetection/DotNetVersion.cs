@@ -15,7 +15,7 @@ namespace Austin.DotNetVersionDetection
 
         public override string ToString()
         {
-            if (Flavor == DotNetFlavor.Unknown)
+            if (Version == null)
             {
                 return Flavor.ToString();
             }

@@ -5,6 +5,7 @@
         Unknown,
         NetFramework,
         NetCore,
+        NetNative,
         Mono,
     }
 }

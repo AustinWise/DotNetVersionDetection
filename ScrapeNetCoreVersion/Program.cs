@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
+using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 
 namespace ScrapeNetCoreVersion;
 
@@ -48,12 +50,22 @@ internal class Program
         };
         rootCommand.Add(scrapeCommand);
 
+        var writeCommand = new Command("write", "Write version information .")
+        {
+        };
+        rootCommand.Add(writeCommand);
+
         scrapeCommand.SetHandler(async (rid, dotnetStoragePath, offline) =>
         {
             var prog = new Program(offline, rid, dotnetStoragePath);
             await prog.DownloadAndExtractIfNotOffline();
-            var versionMap = await prog.GetVersionsFromRuntimes();
-            WriteDotnetCoreInfo(versionMap);
+            await prog.SaveVersionInfoFromRuntimes();
+        }, ridOption, dotnetStoragePathOption, offlineOption);
+
+        writeCommand.SetHandler(async (rid, dotnetStoragePath, offline) =>
+        {
+            // var versionMap = await prog.GetVersionsFromRuntimes();
+            // WriteDotnetCoreInfo(versionMap);
         }, ridOption, dotnetStoragePathOption, offlineOption);
 
         await rootCommand.InvokeAsync(args);
@@ -287,7 +299,7 @@ internal class Program
         });
     }
 
-    private async Task<List<VersionCombo>> GetVersionsFromRuntimes()
+    private async Task SaveVersionInfoFromRuntimes()
     {
         var ret = new List<VersionCombo>();
 
@@ -325,10 +337,21 @@ internal class Program
             lock (ret)
                 ret.Add(new VersionCombo(spcVersion, spcInformationalVersion, frameworkDescription, runtimeVersion));
         });
-        return ret;
+
+        ret.Sort((x, y) => x.RuntimeVersion.CompareTo(y.RuntimeVersion));
+
+        var options = new JsonSerializerOptions()
+        {
+            WriteIndented = true,
+        };
+        await File.WriteAllTextAsync(Path.Combine(Environment.CurrentDirectory, "resources", "Versions." + _rid + ".json"), JsonSerializer.Serialize(ret, options));
     }
 
-    record class VersionCombo(Version SpcVersion, string SpcInformationalVersion, string FrameworkDescription, Version RuntimeVersion)
+    record class VersionCombo(Version SpcVersion, string SpcInformationalVersion, string FrameworkDescription, Version RuntimeVersion) : IComparable<VersionCombo>
     {
+        public int CompareTo(VersionCombo? other)
+        {
+            throw new NotImplementedException();
+        }
     }
 }

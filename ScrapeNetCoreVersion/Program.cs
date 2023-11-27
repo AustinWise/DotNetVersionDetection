@@ -3,7 +3,6 @@ using System.CommandLine;
 using System.Diagnostics;
 using System.IO.Compression;
 using System.Runtime.InteropServices;
-using System.Runtime.Serialization;
 using System.Security.Cryptography;
 
 namespace ScrapeNetCoreVersion;
@@ -53,7 +52,7 @@ internal class Program
         {
             var prog = new Program(offline, rid, dotnetStoragePath);
             await prog.DownloadAndExtractIfNotOffline();
-            var versionMap = prog.GetVersionsFromRuntimes();
+            var versionMap = await prog.GetVersionsFromRuntimes();
             WriteDotnetCoreInfo(versionMap);
         }, ridOption, dotnetStoragePathOption, offlineOption);
 
@@ -101,7 +100,7 @@ internal class Program
         sw.WriteLine("        {");
         sw.WriteLine("            return new Dictionary<Version, DotNetCoreVersion>()");
         sw.WriteLine("            {");
-        foreach (var group in versionMap.GroupBy(v => v.SpcVersion))
+        foreach (var group in versionMap.GroupBy(v => v.SpcVersion).OrderBy(v => v.Key))
         {
             if (group.Count() == 1)
             {
@@ -113,7 +112,7 @@ internal class Program
                 sw.WriteLine($"                    Version.Parse(\"{group.Key}\"),");
                 sw.WriteLine($"                    new DotNetCoreVersion(new Dictionary<string, Version>()");
                 sw.WriteLine($"                    {{");
-                foreach (var versionCombo in group)
+                foreach (var versionCombo in group.OrderBy(v => v.RuntimeVersion))
                 {
                     sw.WriteLine($"                        {{ \"{versionCombo.SpcInformationalVersion.Split(' ').Last()}\", Version.Parse(\"{versionCombo.RuntimeVersion}\") }},");
                 }
@@ -288,13 +287,13 @@ internal class Program
         });
     }
 
-    private List<VersionCombo> GetVersionsFromRuntimes()
+    private async Task<List<VersionCombo>> GetVersionsFromRuntimes()
     {
         var ret = new List<VersionCombo>();
 
         string executableExtension = IsWindows ? ".exe" : "";
 
-        Parallel.ForEach(new DirectoryInfo(_extractLocation).GetDirectories(), async (dotnetFolder, ct) =>
+        await Parallel.ForEachAsync(new DirectoryInfo(_extractLocation).GetDirectories(), async (dotnetFolder, ct) =>
         {
             var runtimeVersion = Version.Parse(dotnetFolder.Name);
             string dotnetExe = Path.Combine(dotnetFolder.FullName, "dotnet" + executableExtension);
